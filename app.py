@@ -13,7 +13,7 @@ st.markdown("Otimização da entrada de notas, cálculo de CMV e histórico no G
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # Substitua pela URL completa da sua planilha do Google Sheets
-URL_PLANILHA = "COLE_AQUI_A_URL_DA_SUA_PLANILHA"
+URL_PLANILHA = "https://docs.google.com/spreadsheets/d/1UdKu1R33qhJTyVjAJNfbNFZYsChFcowRlzitjcooLa8/edit?gid=0#gid=0"
 
 def carregar_dados():
     """Carrega os dados do Google Sheets."""
