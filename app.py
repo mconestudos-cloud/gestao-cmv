@@ -3,103 +3,105 @@ import pandas as pd
 import xmltodict
 from streamlit_gsheets import GSheetsConnection
 from datetime import datetime
+import re
 
-# Configuração da página
-st.set_page_config(page_title="Gestão de CMV - BI", layout="wide")
-st.title("📊 BI de Compras & CMV")
+st.set_page_config(page_title="Gestão de CMV Inteligente", layout="wide")
 
-# Conexão com Google Sheets
+# Conexão GSheets
 conn = st.connection("gsheets", type=GSheetsConnection)
 URL_PLANILHA = "https://docs.google.com/spreadsheets/d/1UdKu1R33qhJTyVjAJNfNFZYsChFcowRlzitjcooLa8/edit#gid=0"
 
-def carregar_dados():
+# Funções de Apoio
+def carregar_dados(aba):
     try:
-        df = conn.read(spreadsheet=URL_PLANILHA, worksheet="Historico", ttl=0)
-        df = df.dropna(how="all")
-        df['Data_Registro'] = pd.to_datetime(df['Data_Registro'])
-        df['Valor_Total'] = pd.to_numeric(df['Valor_Total'])
-        df['Quantidade_Kg'] = pd.to_numeric(df['Quantidade_Kg'])
-        df['Preco_por_Kg'] = pd.to_numeric(df['Preco_por_Kg'])
-        return df
+        df = conn.read(spreadsheet=URL_PLANILHA, worksheet=aba, ttl=0)
+        return df.dropna(how="all")
     except:
-        return pd.DataFrame(columns=['Data_Registro', 'Origem', 'Fornecedor', 'Item', 'Categoria', 'Quantidade_Kg', 'Valor_Total', 'Preco_por_Kg'])
+        return pd.DataFrame()
 
-def adicionar_compra(origem, fornecedor, item, categoria, qtd_kg, valor_total):
-    df_atual = carregar_dados()
-    preco_kg = valor_total / qtd_kg if qtd_kg > 0 else 0
-    nova_linha = pd.DataFrame([{
-        'Data_Registro': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        'Origem': origem, 
-        'Fornecedor': fornecedor, # Campo novo adicionado aqui
-        'Item': item, 
-        'Categoria': categoria,
-        'Quantidade_Kg': float(qtd_kg), 
-        'Valor_Total': float(valor_total), 
-        'Preco_por_Kg': float(preco_kg)
-    }])
-    df_novo = pd.concat([df_atual, nova_linha], ignore_index=True)
-    conn.update(spreadsheet=URL_PLANILHA, worksheet="Historico", data=df_novo)
-
-# --- NAVEGAÇÃO ---
-menu = st.sidebar.radio("Navegação", ["Lançamentos", "Análise de Preços", "Dashboard Geral"])
-
-if menu == "Lançamentos":
-    aba_m, aba_x = st.tabs(["✍️ Manual", "🧾 XML"])
-    with aba_m:
-        with st.form("fm"):
-            col_forn, col_item = st.columns(2)
-            forn = col_forn.text_input("Fornecedor") # Input do fornecedor
-            it = col_item.text_input("Item/Insumo")
-            
-            c1, c2 = st.columns(2)
-            cat = c1.selectbox("Categoria", ["Carnes", "Hortifruti", "Bebidas", "Outros"])
-            q = c2.number_input("Quantidade (Kg)", min_value=0.01)
-            
-            v = st.number_input("Valor Total (R$)", min_value=0.01)
-            
-            if st.form_submit_button("Salvar Registro"):
-                adicionar_compra("Manual", forn, it, cat, q, v)
-                st.success("Registrado com sucesso!")
-                st.rerun()
+def padronizar_item(nome_xml, df_de_para):
+    """Consulta o dicionário para traduzir o nome e aplicar fator de conversão."""
+    nome_xml = nome_xml.upper()
+    fator = 1.0
+    nome_final = nome_xml.title()
     
-    with aba_x:
-        up = st.file_uploader("Upload XML NFe", type='xml')
-        if up:
-            try:
-                dict_xml = xmltodict.parse(up.read())
-                nome_fornecedor = dict_xml['nfeProc']['NFe']['infNFe']['emit']['xNome']
-                produtos = dict_xml['nfeProc']['NFe']['infNFe']['det']
-                if not isinstance(produtos, list): produtos = [produtos]
-                
-                st.warning(f"Fornecedor Identificado: {nome_fornecedor}")
-                if st.button("Importar Itens desta Nota"):
-                    for p in produtos:
-                        info = p['prod']
-                        adicionar_compra("XML", nome_fornecedor, info['xProd'], "A Classificar", float(info['qCom']), float(info['vProd']))
-                    st.success("Nota importada!")
-                    st.rerun()
-            except:
-                st.error("Erro ao ler XML.")
+    if not df_de_para.empty:
+        for _, row in df_de_para.iterrows():
+            termo = str(row['Termo_XML']).upper()
+            if termo in nome_xml:
+                nome_final = row['Nome_Padrao']
+                fator = float(row['Fator_Conversao'])
+                break
+    return nome_final, fator
 
-elif menu == "Análise de Preços":
-    st.header("📈 Inteligência de Compras")
-    df = carregar_dados()
-    if not df.empty:
-        # Filtro de Item
-        itens = df['Item'].unique()
-        sel = st.selectbox("Selecione o Insumo:", itens)
-        df_item = df[df['Item'] == sel].sort_values('Data_Registro')
-        
-        # Comparativo entre fornecedores
-        st.subheader(f"Quem vende {sel} mais barato?")
-        df_comp = df_item.groupby('Fornecedor')['Preco_por_Kg'].mean().reset_index()
-        st.bar_chart(df_comp.set_index('Fornecedor'))
-        
-        st.write("Histórico de compras deste item:")
-        st.table(df_item[['Data_Registro', 'Fornecedor', 'Preco_por_Kg']])
+# --- INTERFACE ---
+menu = st.sidebar.radio("Navegação", ["Lançamentos", "Configurações (De/Para)", "Dashboard BI"])
 
-elif menu == "Dashboard Geral":
-    df = carregar_dados()
+if menu == "Configurações (De/Para)":
+    st.header("⚙️ Dicionário de Padronização")
+    st.info("Ensine o robô: Se o XML contiver 'ARROZ', salve como 'Arroz Branco' e multiplique por '5' (se for fardo 5kg).")
+    
+    df_config = carregar_dados("Config")
+    
+    with st.form("add_config"):
+        c1, c2, c3 = st.columns(3)
+        t_xml = c1.text_input("Termo no XML (ex: ARROZ)")
+        n_pad = c2.text_input("Nome Padrão (ex: Arroz Branco)")
+        f_conv = c3.number_input("Fator de Conversão", min_value=0.001, value=1.0, format="%.3f")
+        if st.form_submit_button("Salvar Regra"):
+            novo_de_para = pd.concat([df_config, pd.DataFrame([{"Termo_XML": t_xml, "Nome_Padrao": n_pad, "Fator_Conversao": f_conv}])], ignore_index=True)
+            conn.update(spreadsheet=URL_PLANILHA, worksheet="Config", data=novo_de_para)
+            st.success("Regra salva!")
+            st.rerun()
+    st.dataframe(df_config, use_container_width=True)
+
+elif menu == "Lançamentos":
+    st.header("🧾 Importação de Notas")
+    df_config = carregar_dados("Config")
+    arquivo = st.file_uploader("Arraste o XML aqui", type='xml')
+    
+    if arquivo:
+        dados = xmltodict.parse(arquivo.read())
+        emitente = dados['nfeProc']['NFe']['infNFe']['emit']['xNome']
+        produtos = dados['nfeProc']['NFe']['infNFe']['det']
+        if not isinstance(produtos, list): produtos = [produtos]
+        
+        st.write(f"**Fornecedor:** {emitente}")
+        
+        itens_processados = []
+        for p in produtos:
+            prod = p['prod']
+            nome_original = prod['xProd']
+            qtd_xml = float(prod['qCom'])
+            vlr_xml = float(prod['vProd'])
+            
+            nome_padrao, fator = padronizar_item(nome_original, df_config)
+            qtd_final = qtd_xml * fator
+            
+            itens_processados.append({
+                "Data_Registro": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "Fornecedor": emitente,
+                "Item_Original": nome_original,
+                "Item_Padrao": nome_padrao,
+                "Qtd_Real": qtd_final,
+                "Valor_Total": vlr_xml,
+                "Preco_Kg_Real": vlr_xml / qtd_final if qtd_final > 0 else 0
+            })
+        
+        df_previa = pd.DataFrame(itens_processados)
+        st.dataframe(df_previa)
+        
+        if st.button("Confirmar e Salvar no Sheets"):
+            df_historico = carregar_dados("Historico")
+            df_final = pd.concat([df_historico, df_previa], ignore_index=True)
+            conn.update(spreadsheet=URL_PLANILHA, worksheet="Historico", data=df_final)
+            st.success("Dados processados e padronizados com sucesso!")
+
+elif menu == "Dashboard BI":
+    st.header("📈 Análise Estratégica de CMV")
+    df = carregar_dados("Historico")
     if not df.empty:
-        st.subheader("Resumo Financeiro")
-        st.dataframe(df.sort_values('Data_Registro', ascending=False), use_container_width=True)
+        st.metric("Total Comprado", f"R$ {pd.to_numeric(df['Valor_Total']).sum():,.2f}")
+        # Gráfico comparativo por Item_Padrao (independente da marca no XML)
+        df_comp = df.groupby('Item_Padrao')['Preco_Kg_Real'].mean().reset_index()
+        st.bar_chart(df_comp.set_index('Item_Padrao'))
