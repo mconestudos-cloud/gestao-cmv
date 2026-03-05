@@ -10,7 +10,8 @@ st.title("📊 BI de Compras - Lançamentos & Padronização")
 
 # Conexão GSheets
 conn = st.connection("gsheets", type=GSheetsConnection)
-URL_PLANILHA = "https://docs.google.com/spreadsheets/d/1UdKu1R33qhJTyVjAJNfNFZYsChFcowRlzitjcooLa8/edit#gid=0"
+# Certifique-se de que este link é o correto da sua planilha
+URL_PLANILHA = "https://docs.google.com/spreadsheets/d/1UdKu1R33qhJTyVjAJNfbNFZYsChFcowRlzitjcooLa8/edit?gid=113280754#gid=113280754"
 
 # --- FUNÇÕES DE APOIO ---
 def carregar_dados(aba):
@@ -23,7 +24,7 @@ def carregar_dados(aba):
 def aplicar_padronizacao(nome_bruto, df_config):
     """Verifica se o item existe no dicionário e aplica o fator de conversão."""
     nome_bruto_up = str(nome_bruto).upper()
-    nome_final = nome_bruto.title()
+    nome_final = str(nome_bruto).title()
     fator = 1.0
     
     if not df_config.empty:
@@ -73,4 +74,70 @@ if menu == "Lançamentos":
             
             c3, c4, c5 = st.columns(3)
             cat = c3.selectbox("Categoria", ["Carnes", "Hortifruti", "Secos", "Bebidas", "Outros"])
-            qtd = c4.number_
+            qtd = c4.number_input("Qtd (Unidades/Fardos)", min_value=0.01, step=1.0)
+            vlr = c5.number_input("Valor Total (R$)", min_value=0.01)
+            
+            if st.form_submit_button("Registrar Compra"):
+                salvar_no_historico("Manual", forn, item, cat, qtd, vlr, df_config)
+                st.success(f"✅ {item} registrado!")
+                st.rerun()
+
+    with aba_xml:
+        up = st.file_uploader("Selecione o arquivo XML", type='xml')
+        if up:
+            try:
+                dados = xmltodict.parse(up.read())
+                emitente = dados['nfeProc']['NFe']['infNFe']['emit']['xNome']
+                produtos = dados['nfeProc']['NFe']['infNFe']['det']
+                if not isinstance(produtos, list): produtos = [produtos]
+                
+                st.info(f"Fornecedor: {emitente}")
+                
+                previa_dados = []
+                for p in produtos:
+                    prod = p['prod']
+                    n_pad, fat = aplicar_padronizacao(prod['xProd'], df_config)
+                    previa_dados.append({
+                        "Item Original": prod['xProd'],
+                        "Item Padronizado": n_pad,
+                        "Qtd Calc (Kg)": float(prod['qCom']) * fat,
+                        "Valor (R$)": float(prod['vProd'])
+                    })
+                
+                st.dataframe(pd.DataFrame(previa_dados), use_container_width=True)
+                
+                if st.button("Confirmar Importação Total"):
+                    for p in produtos:
+                        prod = p['prod']
+                        salvar_no_historico("XML", emitente, prod['xProd'], "A Classificar", float(prod['qCom']), float(prod['vProd']), df_config)
+                    st.success("Nota importada com sucesso!")
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Erro ao ler XML: {e}")
+
+elif menu == "Configurações (Dicionário)":
+    st.header("⚙️ Dicionário de Padronização (De/Para)")
+    
+    with st.form("add_de_para"):
+        col1, col2, col3 = st.columns(3)
+        t_xml = col1.text_input("Termo no XML/Manual (ex: TIO JOAO 5KG)")
+        n_pad = col2.text_input("Nome Padrão (ex: Arroz Branco)")
+        f_conv = col3.number_input("Peso do Pacote (Kg)", min_value=0.001, value=1.0, format="%.3f")
+        if st.form_submit_button("Adicionar Regra"):
+            nova_regra = pd.concat([df_config, pd.DataFrame([{"Termo_XML": t_xml, "Nome_Padrao": n_pad, "Fator_Conversao": f_conv}])], ignore_index=True)
+            conn.update(spreadsheet=URL_PLANILHA, worksheet="Config", data=nova_regra)
+            st.success("Regra adicionada!")
+            st.rerun()
+    st.table(df_config)
+
+elif menu == "Dashboard BI":
+    st.header("📈 Análise de CMV & Histórico")
+    df = carregar_dados("Historico")
+    if not df.empty:
+        df['Valor_Total'] = pd.to_numeric(df['Valor_Total'])
+        df['Preco_Kg_Real'] = pd.to_numeric(df['Preco_Kg_Real'])
+        st.metric("Total Investido", f"R$ {df['Valor_Total'].sum():,.2f}")
+        st.subheader("Custo Médio por Quilo (Padronizado)")
+        df_comp = df.groupby('Item_Padrao')['Preco_Kg_Real'].mean().reset_index()
+        st.bar_chart(df_comp.set_index('Item_Padrao'))
+        st.dataframe(df.sort_values("Data_Registro", ascending=False), use_container_width=True)
