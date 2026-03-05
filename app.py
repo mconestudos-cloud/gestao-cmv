@@ -13,7 +13,7 @@ st.markdown("Ferramenta de automação para controle de compras e análise de cu
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # MANTENHA O LINK DA SUA PLANILHA ABAIXO
-URL_PLANILHA = "https://docs.google.com/spreadsheets/d/1UdKu1R33qhJTyVjAJNfNFZYsChFcowRlzitjcooLa8/edit#gid=0"
+URL_PLANILHA = "https://docs.google.com/spreadsheets/d/1UdKu1R33qhJTyVjAJNfbNFZYsChFcowRlzitjcooLa8/edit?gid=0#gid=0"
 
 def carregar_dados():
     """Lê os dados históricos da planilha em tempo real."""
