@@ -4,28 +4,29 @@ import xmltodict
 from streamlit_gsheets import GSheetsConnection
 from datetime import datetime
 
-# Configuração da página
-st.set_page_config(page_title="Gestão de CMV - FP&A", layout="wide")
-st.title("📊 Gestão de CMV e Insumos")
-st.markdown("Otimização da entrada de notas, cálculo de CMV e histórico no Google Sheets.")
+# Configuração da página para facilitar a análise de FP&A
+st.set_page_config(page_title="Gestão de CMV - Restaurante", layout="wide")
+st.title("📊 Sistema de Gestão de CMV")
+st.markdown("Ferramenta de automação para controle de compras e análise de custos unitários.")
 
-# Estabelecer conexão com o Google Sheets
+# Estabelecer conexão com o Google Sheets usando as Secrets que você salvou
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# Substitua pela URL completa da sua planilha do Google Sheets
-URL_PLANILHA = "https://docs.google.com/spreadsheets/d/1UdKu1R33qhJTyVjAJNfbNFZYsChFcowRlzitjcooLa8/edit?gid=0#gid=0"
+# MANTENHA O LINK DA SUA PLANILHA ABAIXO
+URL_PLANILHA = "https://docs.google.com/spreadsheets/d/1UdKu1R33qhJTyVjAJNfNFZYsChFcowRlzitjcooLa8/edit#gid=0"
 
 def carregar_dados():
-    """Carrega os dados do Google Sheets."""
+    """Lê os dados históricos da planilha em tempo real."""
     try:
+        # ttl=0 garante que o cache não segure dados antigos após deletar linhas na planilha
         df = conn.read(spreadsheet=URL_PLANILHA, worksheet="Historico", ttl=0)
-        return df.dropna(how="all") # Remove linhas totalmente vazias
+        return df.dropna(how="all")
     except Exception as e:
-        st.error("Erro ao carregar dados. Verifique a conexão ou a URL da planilha.")
+        st.error("Erro ao conectar com a planilha. Verifique se o e-mail do robô é 'Editor'.")
         return pd.DataFrame(columns=['Data_Registro', 'Origem', 'Item', 'Categoria', 'Quantidade_Kg', 'Valor_Total', 'Preco_por_Kg'])
 
 def adicionar_compra(origem, item, categoria, qtd_kg, valor_total):
-    """Lê a planilha, adiciona a nova linha e atualiza o Google Sheets."""
+    """Adiciona um novo registro ao histórico no Google Sheets."""
     df_atual = carregar_dados()
     preco_kg = valor_total / qtd_kg if qtd_kg > 0 else 0
     
@@ -42,88 +43,71 @@ def adicionar_compra(origem, item, categoria, qtd_kg, valor_total):
     df_novo = pd.concat([df_atual, nova_linha], ignore_index=True)
     conn.update(spreadsheet=URL_PLANILHA, worksheet="Historico", data=df_novo)
 
-# --- INTERFACE DE INSERÇÃO DE DADOS ---
-aba_manual, aba_xml = st.tabs(["✍️ Input Manual", "🧾 Importar XML (NFe)"])
+# --- INTERFACE DE ENTRADA ---
+aba_manual, aba_xml = st.tabs(["✍️ Registro Manual", "🧾 Importação de XML (NFe)"])
 
 with aba_manual:
     with st.form("form_manual", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        item_nome = col1.text_input("Nome do Insumo")
-        categoria = col2.selectbox("Categoria", ["Carnes", "Hortifruti", "Laticínios", "Bebidas", "Secos", "Outros"])
+        c1, c2 = st.columns(2)
+        item_nome = c1.text_input("Descrição do Insumo")
+        categoria = c2.selectbox("Categoria", ["Carnes", "Hortifruti", "Laticínios", "Bebidas", "Secos", "Outros"])
         
-        col3, col4 = st.columns(2)
-        quantidade = col3.number_input("Quantidade (Kg)", min_value=0.01, step=0.1)
-        valor = col4.number_input("Valor Total (R$)", min_value=0.01, step=1.0)
+        c3, c4 = st.columns(2)
+        quantidade = c3.number_input("Peso Comprado (Kg)", min_value=0.001, format="%.3f")
+        valor = c4.number_input("Valor Total da Nota (R$)", min_value=0.01, format="%.2f")
         
-        submit = st.form_submit_button("Registrar Compra")
-        if submit:
-            with st.spinner("Salvando no Google Sheets..."):
+        if st.form_submit_button("Salvar no Histórico"):
+            with st.spinner("Gravando dados..."):
                 adicionar_compra("Manual", item_nome, categoria, quantidade, valor)
-            st.success(f"✅ {item_nome} salvo com sucesso!")
+            st.success(f"Sucesso: {item_nome} registrado!")
             st.rerun()
 
 with aba_xml:
-    st.info("Faça o upload do XML da Nota Fiscal Eletrônica (NFe).")
-    arquivo_xml = st.file_uploader("Selecione o arquivo XML", type=['xml'])
+    st.write("Arraste o arquivo .xml da nota fiscal abaixo para processar os itens automaticamente.")
+    arquivo_xml = st.file_uploader("Upload XML NFe", type=['xml'])
     
-    if arquivo_xml is not None:
+    if arquivo_xml:
         try:
-            dict_xml = xmltodict.parse(arquivo_xml.read())
-            produtos = dict_xml['nfeProc']['NFe']['infNFe']['det']
-            
-            if not isinstance(produtos, list):
-                produtos = [produtos]
+            dados_xml = xmltodict.parse(arquivo_xml.read())
+            # Navegação na estrutura padrão da NFe brasileira
+            produtos = dados_xml['nfeProc']['NFe']['infNFe']['det']
+            if not isinstance(produtos, list): produtos = [produtos]
                 
-            st.write(f"**{len(produtos)} itens encontrados na nota.**")
-            
-            with st.spinner("Processando e salvando itens no Google Sheets..."):
-                for prod in produtos:
-                    prod_info = prod['prod']
-                    nome_prod = prod_info['xProd']
-                    qtd = float(prod_info['qCom']) 
-                    vlr = float(prod_info['vProd'])
-                    adicionar_compra("XML", nome_prod, "A Classificar", qtd, vlr)
-                
-            st.success("✅ Nota Fiscal salva no histórico com sucesso!")
-        except Exception as e:
-            st.error("Erro ao processar o XML. Verifique se é um XML de NFe válido.")
+            st.info(f"Detectados {len(produtos)} itens nesta nota.")
+            if st.button("Confirmar Importação de Todos os Itens"):
+                with st.spinner("Processando lote..."):
+                    for p in produtos:
+                        info = p['prod']
+                        adicionar_compra("XML", info['xProd'], "A Classificar", float(info['qCom']), float(info['vProd']))
+                st.success("Nota fiscal integrada com sucesso!")
+                st.rerun()
+        except:
+            st.error("Erro na leitura do XML. Certifique-se de que é um arquivo de NFe válido.")
 
-# --- SEÇÃO DE ANÁLISE E FP&A ---
+# --- DASHBOARD DE ANÁLISE ---
 st.divider()
-st.header("📈 Dashboard de CMV - Histórico Consolidado")
+df_resumo = carregar_dados()
 
-df = carregar_dados()
+if not df_resumo.empty:
+    # Garantir que colunas numéricas sejam tratadas corretamente
+    df_resumo['Valor_Total'] = pd.to_numeric(df_resumo['Valor_Total'])
+    df_resumo['Quantidade_Kg'] = pd.to_numeric(df_resumo['Quantidade_Kg'])
+    
+    # Métricas Principais
+    m1, m2, m3 = st.columns(3)
+    total_financeiro = df_resumo['Valor_Total'].sum()
+    total_peso = df_resumo['Quantidade_Kg'].sum()
+    m1.metric("Gasto Total (CMV)", f"R$ {total_financeiro:,.2f}")
+    m2.metric("Volume Total", f"{total_peso:,.2f} Kg")
+    m3.metric("Preço Médio Global/Kg", f"R$ {(total_financeiro/total_peso):,.2f}")
 
-if not df.empty:
-    # Conversão de tipos para garantir os cálculos matemáticos
-    df['Valor_Total'] = pd.to_numeric(df['Valor_Total'], errors='coerce')
-    df['Quantidade_Kg'] = pd.to_numeric(df['Quantidade_Kg'], errors='coerce')
+    # Visão por Categoria
+    st.subheader("📊 Distribuição de Custos")
+    col_grafico, col_tabela = st.columns([1, 1])
     
-    total_gasto = df['Valor_Total'].sum()
-    total_kg = df['Quantidade_Kg'].sum()
+    df_cat = df_resumo.groupby('Categoria')['Valor_Total'].sum().reset_index()
+    col_grafico.bar_chart(df_cat.set_index('Categoria'))
     
-    col_m1, col_m2, col_m3 = st.columns(3)
-    col_m1.metric("Custo Total Acumulado", f"R$ {total_gasto:,.2f}")
-    col_m2.metric("Volume Comprado", f"{total_kg:,.2f} Kg")
-    col_m3.metric("Custo Médio Global / Kg", f"R$ {(total_gasto/total_kg):,.2f}" if total_kg > 0 else "R$ 0,00")
-    
-    st.subheader("Custos por Categoria")
-    df_categoria = df.groupby('Categoria').agg(
-        Total_Gasto=('Valor_Total', 'sum'),
-        Total_Kg=('Quantidade_Kg', 'sum')
-    ).reset_index()
-    df_categoria['Preço_Médio/Kg'] = df_categoria['Total_Gasto'] / df_categoria['Total_Kg']
-    
-    st.dataframe(df_categoria.style.format({
-        'Total_Gasto': 'R$ {:.2f}',
-        'Total_Kg': '{:.2f} kg',
-        'Preço_Médio/Kg': 'R$ {:.2f}'
-    }), use_container_width=True)
-    
-    st.subheader("Detalhamento de Entradas (Google Sheets)")
-    st.dataframe(df.style.format({
-        'Valor_Total': 'R$ {:.2f}',
-        'Preco_por_Kg': 'R$ {:.2f}'
-    }), use_container_width=True)
+    col_tabela.dataframe(df_resumo[['Data_Registro', 'Item', 'Categoria', 'Preco_por_Kg']].sort_values(by='Data_Registro', ascending=False), use_container_width=True)
 else:
-    st.warning("A planilha está vazia. Adicione insumos manualmente ou importe um XML para começar.")
+    st.warning("Aguardando dados para gerar indicadores financeiros.")
