@@ -129,13 +129,39 @@ if menu == "Lançamentos":
                     botao_importar = st.button("🚀 Confirmar Importação Total")
                 
                 if botao_importar:
-                    with st.spinner("Integrando nota ao banco de dados..."):
+                    with st.spinner("Integrando nota em lote ao banco de dados... (Otimizado)"):
+                        # 1. Lê a planilha apenas UMA VEZ
+                        df_historico_lote = carregar_dados("Historico")
+                        novas_linhas = []
+                        
+                        # 2. Processa todos os itens na memória
                         for p in produtos:
                             prod = p['prod']
-                            salvar_no_historico("XML", str(numero_nfe), emitente, prod['xProd'], "XML", float(prod['qCom']), float(prod['vProd']), df_config)
+                            n_pad, fat, cat_padrao = aplicar_padronizacao(prod['xProd'], df_config)
+                            qtd_real = float(prod['qCom']) * fat
+                            vlr_tot = float(prod['vProd'])
+                            preco_kg = vlr_tot / qtd_real if qtd_real > 0 else 0
+                            
+                            novas_linhas.append({
+                                "Data_Registro": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "Origem": "XML",
+                                "Numero_Nota": str(numero_nfe),
+                                "Fornecedor": emitente,
+                                "Item_Original": prod['xProd'],
+                                "Item_Padrao": n_pad,
+                                "Quantidade_Kg": qtd_real,
+                                "Valor_Total": vlr_tot,
+                                "Preco_Kg_Real": preco_kg,
+                                "Categoria": cat_padrao
+                            })
+                        
+                        # 3. Salva TUDO na planilha de uma só vez (Apenas 1 requisição na API)
+                        df_novas = pd.DataFrame(novas_linhas)
+                        df_final = pd.concat([df_historico_lote, df_novas], ignore_index=True)
+                        conn.update(spreadsheet=URL_PLANILHA, worksheet="Historico", data=df_final)
                     
                     st.balloons()
-                    st.success(f"✅ Nota {numero_nfe} importada com sucesso!")
+                    st.success(f"✅ Nota {numero_nfe} importada em lote com sucesso! Zero risco de travamento.")
                     st.session_state['uploader_key'] += 1
                     st.rerun()
 
