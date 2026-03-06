@@ -24,7 +24,7 @@ def aplicar_padronizacao(nome_bruto, df_config):
     nome_bruto_up = str(nome_bruto).upper()
     nome_final = str(nome_bruto).title()
     fator = 1.0
-    categoria_padrao = "Outros" # Fallback caso não ache no dicionário
+    categoria_padrao = "Outros" 
     
     if not df_config.empty:
         for _, row in df_config.iterrows():
@@ -32,16 +32,13 @@ def aplicar_padronizacao(nome_bruto, df_config):
             if termo in nome_bruto_up:
                 nome_final = row['Nome_Padrao']
                 fator = float(row['Fator_Conversao'])
-                # Puxa a categoria se a coluna existir no Config
                 if 'Categoria' in row and pd.notna(row['Categoria']):
                     categoria_padrao = row['Categoria']
                 break
     return nome_final, fator, categoria_padrao
 
 def salvar_no_historico(origem, numero_nota, fornecedor, item_bruto, categoria, qtd_informada, valor_total, df_config):
-    # Se for XML, a categoria vem do dicionário; se for manual, usa a que o usuário escolheu
     nome_padrao, fator, cat_dicionario = aplicar_padronizacao(item_bruto, df_config)
-    
     cat_final = categoria if origem == "Manual" else cat_dicionario
     qtd_real = float(qtd_informada) * fator
     preco_kg_real = valor_total / qtd_real if qtd_real > 0 else 0
@@ -102,12 +99,12 @@ if menu == "Lançamentos":
                 produtos = dados['nfeProc']['NFe']['infNFe']['det']
                 if not isinstance(produtos, list): produtos = [produtos]
                 
-                # Trava de Duplicidade
+                # Verificação de Duplicidade Inteligente
+                nota_ja_existe = False
                 if not df_historico_atual.empty and 'Numero_Nota' in df_historico_atual.columns:
                     if str(numero_nfe) in df_historico_atual['Numero_Nota'].astype(str).values:
-                        st.error(f"🛑 Atenção: A Nota Fiscal nº {numero_nfe} já foi importada anteriormente. Operação bloqueada.")
-                        st.stop()
-                
+                        nota_ja_existe = True
+
                 st.info(f"📍 Fornecedor: {emitente} | 🧾 NFe: {numero_nfe}")
                 
                 previa_dados = []
@@ -124,7 +121,14 @@ if menu == "Lançamentos":
                 
                 st.dataframe(pd.DataFrame(previa_dados), use_container_width=True)
                 
-                if st.button("🚀 Confirmar Importação Total"):
+                # Renderiza o alerta e o botão de acordo com a existência da nota
+                if nota_ja_existe:
+                    st.warning(f"⚠️ ATENÇÃO: A Nota Fiscal nº {numero_nfe} já consta no banco de dados. A importação irá gerar dados duplicados.")
+                    botao_importar = st.button("🚨 Ignorar Alerta e Importar Duplicado")
+                else:
+                    botao_importar = st.button("🚀 Confirmar Importação Total")
+                
+                if botao_importar:
                     with st.spinner("Integrando nota ao banco de dados..."):
                         for p in produtos:
                             prod = p['prod']
