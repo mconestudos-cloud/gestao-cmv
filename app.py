@@ -24,30 +24,40 @@ def aplicar_padronizacao(nome_bruto, df_config):
     nome_bruto_up = str(nome_bruto).upper()
     nome_final = str(nome_bruto).title()
     fator = 1.0
+    categoria_padrao = "Outros" # Fallback caso não ache no dicionário
+    
     if not df_config.empty:
         for _, row in df_config.iterrows():
             termo = str(row['Termo_XML']).upper()
             if termo in nome_bruto_up:
                 nome_final = row['Nome_Padrao']
                 fator = float(row['Fator_Conversao'])
+                # Puxa a categoria se a coluna existir no Config
+                if 'Categoria' in row and pd.notna(row['Categoria']):
+                    categoria_padrao = row['Categoria']
                 break
-    return nome_final, fator
+    return nome_final, fator, categoria_padrao
 
-def salvar_no_historico(origem, fornecedor, item_bruto, categoria, qtd_informada, valor_total, df_config):
-    nome_padrao, fator = aplicar_padronizacao(item_bruto, df_config)
+def salvar_no_historico(origem, numero_nota, fornecedor, item_bruto, categoria, qtd_informada, valor_total, df_config):
+    # Se for XML, a categoria vem do dicionário; se for manual, usa a que o usuário escolheu
+    nome_padrao, fator, cat_dicionario = aplicar_padronizacao(item_bruto, df_config)
+    
+    cat_final = categoria if origem == "Manual" else cat_dicionario
     qtd_real = float(qtd_informada) * fator
     preco_kg_real = valor_total / qtd_real if qtd_real > 0 else 0
+    
     df_historico = carregar_dados("Historico")
     nova_linha = pd.DataFrame([{
         "Data_Registro": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "Origem": origem,
+        "Numero_Nota": numero_nota,
         "Fornecedor": fornecedor,
         "Item_Original": item_bruto,
         "Item_Padrao": nome_padrao,
         "Quantidade_Kg": qtd_real,
         "Valor_Total": valor_total,
         "Preco_Kg_Real": preco_kg_real,
-        "Categoria": categoria
+        "Categoria": cat_final
     }])
     df_final = pd.concat([df_historico, nova_linha], ignore_index=True)
     conn.update(spreadsheet=URL_PLANILHA, worksheet="Historico", data=df_final)
@@ -55,6 +65,7 @@ def salvar_no_historico(origem, fornecedor, item_bruto, categoria, qtd_informada
 # --- NAVEGAÇÃO ---
 menu = st.sidebar.radio("Menu", ["Lançamentos", "Configurações (Dicionário)", "Dashboard BI"])
 df_config = carregar_dados("Config")
+df_historico_atual = carregar_dados("Historico")
 
 if menu == "Lançamentos":
     aba_manual, aba_xml = st.tabs(["✍️ Cadastro Manual", "🧾 Importar XML (NFe)"])
@@ -73,12 +84,11 @@ if menu == "Lançamentos":
         if st.button("Registrar Compra"):
             if forn and item:
                 with st.spinner("Gravando..."):
-                    salvar_no_historico("Manual", forn, item, cat, qtd, vlr, df_config)
+                    salvar_no_historico("Manual", "S/N", forn, item, cat, qtd, vlr, df_config)
                 st.success(f"✅ {item} registrado!")
                 st.rerun()
 
     with aba_xml:
-        # Chave dinâmica para forçar o reset do uploader após o uso
         if 'uploader_key' not in st.session_state:
             st.session_state['uploader_key'] = 0
 
@@ -88,18 +98,26 @@ if menu == "Lançamentos":
             try:
                 dados = xmltodict.parse(up.read())
                 emitente = dados['nfeProc']['NFe']['infNFe']['emit']['xNome']
+                numero_nfe = dados['nfeProc']['NFe']['infNFe']['ide']['nNF']
                 produtos = dados['nfeProc']['NFe']['infNFe']['det']
                 if not isinstance(produtos, list): produtos = [produtos]
                 
-                st.info(f"📍 Fornecedor: {emitente}")
+                # Trava de Duplicidade
+                if not df_historico_atual.empty and 'Numero_Nota' in df_historico_atual.columns:
+                    if str(numero_nfe) in df_historico_atual['Numero_Nota'].astype(str).values:
+                        st.error(f"🛑 Atenção: A Nota Fiscal nº {numero_nfe} já foi importada anteriormente. Operação bloqueada.")
+                        st.stop()
+                
+                st.info(f"📍 Fornecedor: {emitente} | 🧾 NFe: {numero_nfe}")
                 
                 previa_dados = []
                 for p in produtos:
                     prod = p['prod']
-                    n_pad, fat = aplicar_padronizacao(prod['xProd'], df_config)
+                    n_pad, fat, cat_padrao = aplicar_padronizacao(prod['xProd'], df_config)
                     previa_dados.append({
                         "Item Original": prod['xProd'],
                         "Item Padronizado": n_pad,
+                        "Categoria": cat_padrao,
                         "Qtd Calc (Kg)": float(prod['qCom']) * fat,
                         "Valor (R$)": float(prod['vProd'])
                     })
@@ -110,16 +128,46 @@ if menu == "Lançamentos":
                     with st.spinner("Integrando nota ao banco de dados..."):
                         for p in produtos:
                             prod = p['prod']
-                            salvar_no_historico("XML", emitente, prod['xProd'], "A Classificar", float(prod['qCom']), float(prod['vProd']), df_config)
+                            salvar_no_historico("XML", str(numero_nfe), emitente, prod['xProd'], "XML", float(prod['qCom']), float(prod['vProd']), df_config)
                     
-                    # Logica para limpar o campo e mostrar sucesso
-                    st.balloons() # Feedback visual comemorativo
-                    st.success("✅ Importação concluída! Os dados já estão no Dashboard.")
-                    
-                    # Muda a chave do uploader para resetar o campo vazio
+                    st.balloons()
+                    st.success(f"✅ Nota {numero_nfe} importada com sucesso!")
                     st.session_state['uploader_key'] += 1
                     st.rerun()
 
             except Exception as e:
                 st.error(f"Erro ao ler XML: {e}")
-# ... (O restante do código de Configurações e Dashboard permanece igual)
+
+elif menu == "Configurações (Dicionário)":
+    st.header("⚙️ Dicionário de Padronização (De/Para)")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    t_xml = col1.text_input("Termo no XML", key="conf_xml", help="Ex: TIO JOAO 5KG")
+    n_pad = col2.text_input("Nome Padrão", key="conf_pad", help="Ex: Arroz Branco")
+    cat_dic = col3.selectbox("Categoria", ["Carnes", "Hortifruti", "Secos", "Bebidas", "Outros"], key="conf_cat")
+    f_conv = col4.number_input("Fator (Kg)", min_value=0.001, value=1.0, format="%.3f", key="conf_fator")
+    
+    if st.button("Adicionar Regra"):
+        if t_xml and n_pad:
+            nova_regra = pd.DataFrame([{"Termo_XML": t_xml, "Nome_Padrao": n_pad, "Fator_Conversao": f_conv, "Categoria": cat_dic}])
+            df_atualizado = pd.concat([df_config, nova_regra], ignore_index=True)
+            conn.update(spreadsheet=URL_PLANILHA, worksheet="Config", data=df_atualizado)
+            st.success("Regra adicionada!")
+            st.rerun()
+        else:
+            st.warning("Preencha o termo e o nome padrão.")
+    
+    if not df_config.empty:
+        st.table(df_config)
+
+elif menu == "Dashboard BI":
+    st.header("📈 Análise de CMV & Histórico")
+    df = carregar_dados("Historico")
+    if not df.empty:
+        df['Valor_Total'] = pd.to_numeric(df['Valor_Total'])
+        df['Preco_Kg_Real'] = pd.to_numeric(df['Preco_Kg_Real'])
+        st.metric("Total Investido", f"R$ {df['Valor_Total'].sum():,.2f}")
+        st.subheader("Custo Médio por Quilo (Padronizado)")
+        df_comp = df.groupby('Item_Padrao')['Preco_Kg_Real'].mean().reset_index()
+        st.bar_chart(df_comp.set_index('Item_Padrao'))
+        st.dataframe(df.sort_values("Data_Registro", ascending=False), use_container_width=True)
