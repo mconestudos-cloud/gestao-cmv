@@ -109,4 +109,34 @@ if menu == "Lançamentos":
             except Exception as e:
                 st.error(f"Erro ao ler XML: {e}")
 
-elif menu
+elif menu == "Configurações (Dicionário)":
+    st.header("⚙️ Dicionário de Padronização (De/Para)")
+    # Removido st.form aqui também
+    col1, col2, col3 = st.columns(3)
+    t_xml = col1.text_input("Termo no XML/Manual (ex: TIO JOAO 5KG)", key="conf_xml")
+    n_pad = col2.text_input("Nome Padrão (ex: Arroz Branco)", key="conf_pad")
+    f_conv = col3.number_input("Peso do Pacote (Kg)", min_value=0.001, value=1.0, format="%.3f", key="conf_fator")
+    
+    if st.button("Adicionar Regra"):
+        if t_xml and n_pad:
+            nova_regra = pd.concat([df_config, pd.DataFrame([{"Termo_XML": t_xml, "Nome_Padrao": n_pad, "Fator_Conversao": f_conv}])], ignore_index=True)
+            conn.update(spreadsheet=URL_PLANILHA, worksheet="Config", data=nova_regra)
+            st.success("Regra adicionada!")
+            st.rerun()
+        else:
+            st.warning("Preencha todos os campos da regra.")
+    
+    if not df_config.empty:
+        st.table(df_config)
+
+elif menu == "Dashboard BI":
+    st.header("📈 Análise de CMV & Histórico")
+    df = carregar_dados("Historico")
+    if not df.empty:
+        df['Valor_Total'] = pd.to_numeric(df['Valor_Total'])
+        df['Preco_Kg_Real'] = pd.to_numeric(df['Preco_Kg_Real'])
+        st.metric("Total Investido", f"R$ {df['Valor_Total'].sum():,.2f}")
+        st.subheader("Custo Médio por Quilo (Padronizado)")
+        df_comp = df.groupby('Item_Padrao')['Preco_Kg_Real'].mean().reset_index()
+        st.bar_chart(df_comp.set_index('Item_Padrao'))
+        st.dataframe(df.sort_values("Data_Registro", ascending=False), use_container_width=True)
